@@ -1,0 +1,17 @@
+# Core web framework
+fastapi==0.111.*           # FastAPI, depends on Starlette & Pydantic
+uvicorn[standard]==0.29.*  # ASGI server with websockets, reload, etc.
+
+# Data‑validation & typing (pulled automatically by FastAPI, but explicit here)
+pydantic==2.*              # Fast, strict data models
+
+# HTTP utilities
+requests==2.*
+
+# LLM client SDKs
+anthropic==0.25.*          # Claude / Opus / Sonnet client
+openai==1.*                # GPT‑4o, GPT‑4, GPT‑3.5 client
+google-generativeai==0.5.* # Gemini client (official Google SDK)
+
+# Optional helpers
+python-dotenv==1.0.*       # Load API keys from a .env file in dev
