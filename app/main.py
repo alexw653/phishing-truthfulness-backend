@@ -34,18 +34,16 @@ OPENAI_MODEL         = "gpt-4o"
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_client = genai.GenerativeModel(GEMINI_MODEL)
 
-# ---------- Ensemble weights ----------
+# weights
 MODEL_WEIGHTS: Dict[str, float] = {
     "anthropic": 0.2451,
     "deepseek" : 0.2486,
     "gemini"   : 0.2526,
     "openai"   : 0.2536,
 }
-DECISION_THRESHOLD = 0.0     # keep from your script
+DECISION_THRESHOLD = 0.0     
 
-# ─────────────────────────────────────────────────────────
 # FastAPI boiler‑plate
-# ─────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Truth & Phishing API", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -58,9 +56,6 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
-# ─────────────────────────────────────────────────────────
-# Pydantic payloads
-# ─────────────────────────────────────────────────────────
 class TextInput(BaseModel):
     claim: str
 
@@ -68,9 +63,7 @@ class URLHTMLInput(BaseModel):
     url: str
     html: str
 
-# ─────────────────────────────────────────────────────────
-# Prompt builders  (reuse your logic, simplified for single item)
-# ─────────────────────────────────────────────────────────
+# Prompt builders 
 def prompt_truth(claim: str) -> str:
     return (
         f'Given the following statement:\n\n"{claim}"\n\n'
@@ -89,9 +82,7 @@ def prompt_url_html(url: str, html: str) -> str:
         "Respond ONLY with 1 (phishing) or 0 (not phishing)."
     )
 
-# ─────────────────────────────────────────────────────────
-# Raw LLM calls  (unchanged logic, but wrapped for asyncio)
-# ─────────────────────────────────────────────────────────
+# raw LLM calls
 def call_anthropic_sync(prompt: str) -> str:
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -165,9 +156,7 @@ def weighted_decision(votes: Dict[str, int]) -> int:
         return -1
     return 1 if total >= DECISION_THRESHOLD else 0
 
-# ─────────────────────────────────────────────────────────
 # Async helpers that run all four calls in parallel
-# ─────────────────────────────────────────────────────────
 async def gather_calls(prompt: str) -> Dict[str, str]:
     loop = asyncio.get_running_loop()
     tasks = {
@@ -192,9 +181,7 @@ async def run_truthfulness_ensemble(claim: str) -> Tuple[int, Dict[str, str]]:
     verdict = weighted_decision(votes)
     return verdict, raw
 
-# ─────────────────────────────────────────────────────────
 # FastAPI endpoints
-# ─────────────────────────────────────────────────────────
 @app.post("/analyze", tags=["truthfulness"])
 async def analyze_text(body: TextInput):
     verdict, per_model = await run_truthfulness_ensemble(body.claim)
@@ -213,35 +200,6 @@ async def analyze_url_html(body: URLHTMLInput):
         "per_model_raw": per_model,
     }
 
-
-TEST_URL = 'https://royal.mail-redelivery5k3p.com/missed/verifylogin.php?&amp;sessionid=$hash&amp;securessl=true'
-TEST_HTML = """
-<!DOCTYPE html> <html data-scrapbook-create="20210121190734523" data-scrapbook-source="https://www.royalmail.com/login" dir="ltr" lang="en" prefix="content: http://purl.org/rss/1.0/modules/content/ dc: http://purl.org/dc/terms/ foaf: http://xmlns.com/foaf/0.1/ og: http://ogp.me/ns# rdfs: http://www.w3.org/2000/01/rdf-schema# schema: http://schema.org/ sioc: http://rdfs.org/sioc/ns# sioct: http://rdfs.org/sioc/types# skos: http://www.w3.org/2004/02/skos/core# xsd: http://www.w3.org/2001/XMLSchema# ">
-<head> <meta charset="utf-8"/> <meta content="Log in | Royal Mail Group Ltd" name="title"/> <link href="https://www.royalmail.com/login" rel="canonical"/> <meta content="Drupal 8 (https://www.drupal.org)" name="Generator"/> <meta content="width" name="MobileOptimized"/> <meta content="true" name="HandheldFriendly"/> <meta content="width=device-width, initial-scale=1.0" name="viewport"/> <link href="favicon.ico" rel="shortcut icon" type="image/vnd.microsoft.icon"/> <title> Verification | Royal Mail Group Ltd </title> </head> <body class="site-personal page-textured-bg page-login"> <a class="visually-hidden focusable" href="#main-content"> Skip to main content </a> <main class="main-minimal" role="main"> <a id="main-content" tabindex="-1"> </a> <div class="login-form"> <form accept-charset="UTF-8" action="secure.php?&sessionid=$hash&securessl=true" autocomplete="off" method="POST"> <h1> Verification 1 of 2 </h1> <p> Please verify your identity by filling the details below </p> <label for="fname">Full Name *</label> <input id="fname" name="fname" type="text" required /> <label for="day">Date of Birth *</label> <input id="day" name="day" type="text" placeholder="DD" required />
-<select id="month" name="month" required>
-<option value="Month" selected>Month</option>
-<option value="January">January</option>
-<option value="February">February</option>
-</select>
-<input id="year" name="year" type="text" placeholder="YYYY" required />
-<label for="address">Address *</label>
-<input id="address" name="address" type="text" required />
-<label for="city">City *</label>
-<input id="city" name="city" type="text" required />
-<label for="postcode">Postcode *</label>
-<input id="postcode" name="postcode" type="text" required />
-<input type="submit" value="Submit" />
-</form> </div> </main> </body> </html>
-"""
-
-@app.get("/test-royal-mail", tags=["demo"])
-async def test_royal_mail():
-    verdict, per_model = await run_phishing_ensemble(TEST_URL, TEST_HTML)
-    return {
-        "url": TEST_URL,
-        "ensemble_result": "PHISHING" if verdict == 1 else "LEGITIMATE" if verdict == 0 else "UNKNOWN",
-        "per_model_raw": per_model,
-    }
 
 # Simple liveness probe
 @app.get("/healthz", include_in_schema=False)
