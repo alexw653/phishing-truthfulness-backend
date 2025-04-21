@@ -44,7 +44,7 @@ MODEL_WEIGHTS: Dict[str, float] = {
 DECISION_THRESHOLD = 0.0     
 
 # FastAPI boiler‑plate
-app = FastAPI(title="Hybrid Truth & Phishing API", version="1.1.0")
+app = FastAPI(title="Hybrid Truth & Phishing API", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -55,6 +55,9 @@ app.add_middleware(
     allow_methods=["POST"],
     allow_headers=["Content-Type"],
 )
+
+class URLInput(BaseModel):
+    url: str
 
 class TextInput(BaseModel):
     claim: str
@@ -69,6 +72,12 @@ def prompt_truth(claim: str) -> str:
         f'Given the following statement:\n\n"{claim}"\n\n'
         "Determine if it is TRUE or FALSE.\n"
         "ONLY OUTPUT 1 (TRUE) OR 0 (FALSE). DO NOT WRITE ANYTHING ELSE."
+    )
+def prompt_url_only(url: str) -> str:
+    return (
+        f"Given this URL:\n\n{url}\n\n"
+        "Determine if it is a phishing website or not.\n"
+        "Respond ONLY with 1 (phishing) or 0 (not phishing)."
     )
 
 def prompt_url_html(url: str, html: str) -> str:
@@ -174,6 +183,14 @@ async def run_phishing_ensemble(url: str, html: str) -> Tuple[int, Dict[str, str
     verdict = weighted_decision(votes)   # 1 / 0 / -1
     return verdict, raw
 
+async def run_url_only_ensemble(url: str) -> Tuple[int, Dict[str, str]]:
+    prompt = prompt_url_only(url)
+    raw = await gather_calls(prompt)
+    votes = {m: map_vote(p) for m, p in raw.items()}
+    verdict = weighted_decision(votes)
+    return verdict, raw
+
+
 async def run_truthfulness_ensemble(claim: str) -> Tuple[int, Dict[str, str]]:
     prompt = prompt_truth(claim)
     raw = await gather_calls(prompt)
@@ -191,9 +208,33 @@ async def analyze_text(body: TextInput):
         "per_model_raw": per_model,
     }
 
+@app.post("/analyze-url", tags=["phishing"])
+async def analyze_url_only(body: URLInput):
+    verdict, per_model = await run_url_only_ensemble(body.url)
+    print("\n================ API DEBUG (URL-ONLY) ==================")
+    print(f"Input URL: {body.url}")
+    print("Raw model outputs:")
+    for model, raw in per_model.items():
+        print(f"  {model}: {raw}")
+    print(f"Final Verdict: {'PHISHING' if verdict == 1 else 'LEGITIMATE' if verdict == 0 else 'UNKNOWN'}")
+    print("========================================================\n")
+    return {
+        "url": body.url,
+        "ensemble_result": "PHISHING" if verdict == 1 else "LEGITIMATE" if verdict == 0 else "UNKNOWN",
+        "per_model_raw": per_model,
+    }
+
+
 @app.post("/analyze-url-html", tags=["phishing"])
 async def analyze_url_html(body: URLHTMLInput):
     verdict, per_model = await run_phishing_ensemble(body.url, body.html)
+    print("\n================ API DEBUG ==================")
+    print(f"Input URL: {body.url}")
+    print("Raw model outputs:")
+    for model, raw in per_model.items():
+        print(f"  {model}: {raw}")
+    print(f"Final Ensemble Verdict: {'PHISHING' if verdict == 1 else 'LEGITIMATE' if verdict == 0 else 'UNKNOWN'}")
+    print("=============================================\n")
     return {
         "url": body.url,
         "ensemble_result": "PHISHING" if verdict == 1 else "LEGITIMATE" if verdict == 0 else "UNKNOWN",
