@@ -14,6 +14,7 @@ import anthropic
 import openai
 import google.generativeai as genai
 import requests
+import time
 
 # ---------- ENV / API keys ----------
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -166,79 +167,118 @@ def weighted_decision(votes: Dict[str, int]) -> int:
     return 1 if total >= DECISION_THRESHOLD else 0
 
 # Async helpers that run all four calls in parallel
-async def gather_calls(prompt: str) -> Dict[str, str]:
+async def gather_calls(prompt: str) -> Tuple[Dict[str, str], Dict[str, float]]:
     loop = asyncio.get_running_loop()
+    
+    timings = {}
+    
+    async def timed_call(name, func, prompt):
+        start = time.monotonic()
+        result = await loop.run_in_executor(None, func, prompt)
+        end = time.monotonic()
+        timings[name] = end - start
+        return result
+    
     tasks = {
-        "anthropic": loop.run_in_executor(None, call_anthropic_sync, prompt),
-        "deepseek" : loop.run_in_executor(None, call_deepseek_sync,  prompt),
-        "gemini"   : loop.run_in_executor(None, call_gemini_sync,    prompt),
-        "openai"   : loop.run_in_executor(None, call_openai_sync,    prompt),
+        "anthropic": timed_call("anthropic", call_anthropic_sync, prompt),
+        "deepseek" : timed_call("deepseek",  call_deepseek_sync,  prompt),
+        "gemini"   : timed_call("gemini",    call_gemini_sync,    prompt),
+        "openai"   : timed_call("openai",    call_openai_sync,    prompt),
     }
-    return {name: await fut for name, fut in tasks.items()}
+    
+    overall_start = time.monotonic()
+    results = await asyncio.gather(*tasks.values())
+    overall_end = time.monotonic()
+    
+    timings["all_llms_combined"] = overall_end - overall_start
+    
+    # map model name to result
+    model_results = dict(zip(tasks.keys(), results))
+    
+    return model_results, timings
 
-async def run_phishing_ensemble(url: str, html: str) -> Tuple[int, Dict[str, str]]:
+async def run_phishing_ensemble(url: str, html: str) -> Tuple[int, Dict[str, str], Dict[str, float]]:
     prompt = prompt_url_html(url, html)
-    raw = await gather_calls(prompt)
+    raw, timings = await gather_calls(prompt)
     votes = {m: map_vote(p) for m, p in raw.items()}
-    verdict = weighted_decision(votes)   # 1 / 0 / -1
-    return verdict, raw
+    verdict = weighted_decision(votes)
+    return verdict, raw, timings
 
-async def run_url_only_ensemble(url: str) -> Tuple[int, Dict[str, str]]:
+async def run_url_only_ensemble(url: str) -> Tuple[int, Dict[str, str], Dict[str, float]]:
     prompt = prompt_url_only(url)
-    raw = await gather_calls(prompt)
+    raw, timings = await gather_calls(prompt)
     votes = {m: map_vote(p) for m, p in raw.items()}
     verdict = weighted_decision(votes)
-    return verdict, raw
+    return verdict, raw, timings
 
 
-async def run_truthfulness_ensemble(claim: str) -> Tuple[int, Dict[str, str]]:
+async def run_truthfulness_ensemble(claim: str) -> Tuple[int, Dict[str, str], Dict[str, float]]:
     prompt = prompt_truth(claim)
-    raw = await gather_calls(prompt)
+    raw, timings = await gather_calls(prompt)
     votes = {m: map_vote(p) for m, p in raw.items()}
     verdict = weighted_decision(votes)
-    return verdict, raw
+    return verdict, raw, timings
 
 # FastAPI endpoints
 @app.post("/analyze", tags=["truthfulness"])
 async def analyze_text(body: TextInput):
-    verdict, per_model = await run_truthfulness_ensemble(body.claim)
+    verdict, per_model, timings = await run_truthfulness_ensemble(body.claim)
+    print("\n================ API DEBUG (TRUTH) ==================")
+    print(f"Input Claim: {body.claim}")
+    print("Raw model outputs:")
+    for model, raw in per_model.items():
+        print(f"  {model}: {raw}")
+    print("Timings (seconds):")
+    for model, t in timings.items():
+        print(f"  {model}: {t:.4f}s")
+    print(f"Final Verdict: {'TRUE' if verdict == 1 else 'FALSE' if verdict == 0 else 'UNKNOWN'}")
+    print("======================================================\n")
     return {
         "claim": body.claim,
         "ensemble_result": "TRUE" if verdict == 1 else "FALSE" if verdict == 0 else "UNKNOWN",
         "per_model_raw": per_model,
+        "timings_seconds": timings, 
     }
 
 @app.post("/analyze-url", tags=["phishing"])
 async def analyze_url_only(body: URLInput):
-    verdict, per_model = await run_url_only_ensemble(body.url)
+    verdict, per_model, timings = await run_url_only_ensemble(body.url)
     print("\n================ API DEBUG (URL-ONLY) ==================")
     print(f"Input URL: {body.url}")
     print("Raw model outputs:")
     for model, raw in per_model.items():
         print(f"  {model}: {raw}")
+    print("Timings (seconds):")
+    for model, t in timings.items():
+        print(f"  {model}: {t:.4f}s")
     print(f"Final Verdict: {'PHISHING' if verdict == 1 else 'LEGITIMATE' if verdict == 0 else 'UNKNOWN'}")
     print("========================================================\n")
     return {
         "url": body.url,
         "ensemble_result": "PHISHING" if verdict == 1 else "LEGITIMATE" if verdict == 0 else "UNKNOWN",
         "per_model_raw": per_model,
+        "timings_seconds": timings, 
     }
 
 
 @app.post("/analyze-url-html", tags=["phishing"])
 async def analyze_url_html(body: URLHTMLInput):
-    verdict, per_model = await run_phishing_ensemble(body.url, body.html)
+    verdict, per_model, timings = await run_phishing_ensemble(body.url, body.html)
     print("\n================ API DEBUG ==================")
     print(f"Input URL: {body.url}")
     print("Raw model outputs:")
     for model, raw in per_model.items():
         print(f"  {model}: {raw}")
+    print("Timings (seconds):")
+    for model, t in timings.items():
+        print(f"  {model}: {t:.4f}s")
     print(f"Final Ensemble Verdict: {'PHISHING' if verdict == 1 else 'LEGITIMATE' if verdict == 0 else 'UNKNOWN'}")
     print("=============================================\n")
     return {
         "url": body.url,
         "ensemble_result": "PHISHING" if verdict == 1 else "LEGITIMATE" if verdict == 0 else "UNKNOWN",
         "per_model_raw": per_model,
+        "timings_seconds": timings,   # timings for each model
     }
 
 
